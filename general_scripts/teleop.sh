@@ -13,6 +13,8 @@ mkdir -p "$LOG_DIR"
 LOCK_FILE="$LOG_DIR/entrypoint.pid"
 
 WE_STARTED_CONTAINER=0
+STARTED_DRIVERS=0
+STARTED_KEYBOARD=0
 CAMERA_PID=""
 DRIVER_EXEC_PID=""
 DRIVER_INNER_PID=""
@@ -64,20 +66,6 @@ proc_in_container() {
   exec_in "pgrep -f '$pattern'" >/dev/null 2>&1
 }
 
-stop_inner() {
-  local pid=$1
-  [[ -n $pid ]] || return 0
-  exec_in "kill -INT $pid" >/dev/null 2>&1 || true
-  local i
-  for i in 1 2 3 4 5 6 7 8; do
-    exec_in "kill -0 $pid" >/dev/null 2>&1 || return 0
-    sleep 0.25
-  done
-  exec_in "kill -TERM $pid" >/dev/null 2>&1 || true
-  sleep 0.5
-  exec_in "kill -KILL $pid" >/dev/null 2>&1 || true
-}
-
 stop_host() {
   local pid=$1
   [[ -n $pid ]] || return 0
@@ -90,18 +78,50 @@ stop_host() {
   kill -KILL "$pid" >/dev/null 2>&1 || true
 }
 
+# pkill -f matches its own shell command line, so the last letter sits in a
+# bracket and the pattern still matches the real process.
+signal_our_nodes() {
+  local signal=$1
+  if [[ $STARTED_KEYBOARD -eq 1 ]]; then
+    exec_in "pkill -${signal} -f 'lib/jetbot_bringup/keyboar[d]_teleop' || true; pkill -${signal} -f 'ros2 run jetbot_bringup keyboar[d]_teleop' || true" \
+      >/dev/null 2>&1 || true
+  fi
+  if [[ $STARTED_DRIVERS -eq 1 ]]; then
+    exec_in "pkill -${signal} -f 'activate_all_driver[s].launch.py' || true; pkill -${signal} -f 'twist_mu[x]' || true; pkill -${signal} -f 'rplida[r]_node' || true; pkill -${signal} -f 'ros2_control_nod[e]' || true; pkill -${signal} -f 'robot_state_publishe[r]' || true; pkill -${signal} -f 'http.server 800[0]' || true" \
+      >/dev/null 2>&1 || true
+  fi
+}
+
+our_nodes_still_running() {
+  if [[ $STARTED_KEYBOARD -eq 1 ]] && proc_in_container 'lib/jetbot_bringup/keyboar[d]_teleop|ros2 run jetbot_bringup keyboar[d]_teleop'; then
+    return 0
+  fi
+  if [[ $STARTED_DRIVERS -eq 1 ]] && proc_in_container 'activate_all_driver[s].launch.py|twist_mu[x]|rplida[r]_node|ros2_control_nod[e]|robot_state_publishe[r]|http.server 800[0]'; then
+    return 0
+  fi
+  return 1
+}
+
 cleanup() {
   local status=$?
-  trap - EXIT INT TERM HUP
+  # A second Ctrl+C must not abort shutdown. docker compose does not take the
+  # container processes with it, so they have to be signalled from in there.
+  trap - EXIT
+  trap '' INT TERM HUP
   if [[ $CLEANED -eq 1 ]]; then
     exit "$status"
   fi
   CLEANED=1
   set +e
   stop_host "$CAMERA_PID"
-  stop_inner "$KEYBOARD_INNER_PID"
+  signal_our_nodes INT
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    our_nodes_still_running || break
+    sleep 0.25
+  done
+  signal_our_nodes KILL
   stop_host "$KEYBOARD_EXEC_PID"
-  stop_inner "$DRIVER_INNER_PID"
   stop_host "$DRIVER_EXEC_PID"
   if [[ $WE_STARTED_CONTAINER -eq 1 ]]; then
     compose stop jetbot_educational >/dev/null 2>&1
@@ -234,6 +254,7 @@ start_docker() {
 
 start_drivers() {
   : >"$LOG_DIR/drivers.log"
+  STARTED_DRIVERS=1
   compose exec --privileged -T jetbot_educational bash -lc \
     'source /opt/ros/humble/install/setup.bash
      source /home/app/ros2_ws/install/setup.bash
@@ -345,6 +366,7 @@ ensure_keyboard_package() {
 
 start_keyboard() {
   : >"$LOG_DIR/keyboard.log"
+  STARTED_KEYBOARD=1
   compose exec --privileged -T jetbot_educational bash -lc \
     'source /opt/ros/humble/install/setup.bash
      source /home/app/ros2_ws/install/setup.bash
