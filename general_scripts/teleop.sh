@@ -24,6 +24,10 @@ ok() {
   printf '\033[32mOK\033[0m  %s\n' "$1"
 }
 
+note() {
+  printf '\033[33m%s\033[0m\n' "$1"
+}
+
 fail() {
   local title=$1
   shift || true
@@ -308,6 +312,37 @@ wait_for_lidar() {
     "${lines[@]}"
 }
 
+# The image install predates keyboard_teleop. A recreated container has the
+# source mount but not the console script until the workspace is built with
+# the ROS underlay sourced.
+keyboard_installed() {
+  exec_in 'source /opt/ros/humble/install/setup.bash && source /home/app/ros2_ws/install/setup.bash && ros2 pkg executables jetbot_bringup' \
+    | grep -qx 'jetbot_bringup keyboard_teleop'
+}
+
+ensure_keyboard_package() {
+  if keyboard_installed; then
+    ok "keyboard executable"
+    return
+  fi
+  note "REBUILD  workspace inside the container: keyboard_teleop is not installed"
+  if ! compose exec --privileged -T jetbot_educational bash -lc \
+    'source /opt/ros/humble/install/setup.bash
+     cd /home/app/ros2_ws
+     colcon build --parallel-workers 2' \
+    >"$LOG_DIR/workspace-build.log" 2>&1; then
+    mapfile -t lines < <(log_lines "$LOG_DIR/workspace-build.log")
+    fail "workspace build failed" "${lines[@]}"
+  fi
+  if ! keyboard_installed; then
+    mapfile -t lines < <(log_lines "$LOG_DIR/workspace-build.log")
+    fail "workspace build failed" \
+      "ros2 run cannot see jetbot_bringup keyboard_teleop after colcon build." \
+      "${lines[@]}"
+  fi
+  ok "keyboard executable"
+}
+
 start_keyboard() {
   : >"$LOG_DIR/keyboard.log"
   compose exec --privileged -T jetbot_educational bash -lc \
@@ -396,6 +431,8 @@ trap 'exit 129' HUP
 
 check_not_already_up
 echo "$$" >"$LOCK_FILE"
+start_docker
+ensure_keyboard_package
 check_device_free /dev/ttyMOTOR motor
 ok "motor port"
 check_device_free /dev/ttyLIDAR lidar
@@ -409,7 +446,6 @@ fi
 ok "camera is free"
 check_ports_free 8080 "camera"
 check_ports_free 8081 "keyboard teleop"
-start_docker
 start_drivers
 wait_for_controllers
 wait_for_lidar
