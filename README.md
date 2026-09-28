@@ -67,7 +67,20 @@ The system runs in two places on the Jetson:
 
 The motors move as soon as you press a key. Put the robot on the floor with space around it, or lift the wheels off the ground, and keep a way to cut power within reach.
 
-You need four terminals: one on the host and three inside the container. Commands marked **host** run on the Jetson itself. Commands marked **container** run after `docker exec`.
+On the Jetson host:
+
+```bash
+cd ~/IntelligentRobotics/jetbot_ros2_mipt
+./general_scripts/teleop.sh
+```
+
+Each stage prints a green `OK` and nothing else. A failure prints a red `ERROR` and the reason: the container did not start, this stack is already running, or a motor, lidar, or camera device is busy. Leave the script in the foreground. Ctrl+C, or the script exiting for any reason, stops the camera server, `keyboard_teleop`, the drivers, and — if this script started it — the container.
+
+Then open the URL from the last `OK` line, click **Enable Control**, and drive with W/A/S/D. Shift is turbo. Esc releases control.
+
+### Manual chain
+
+The same stack, one process per terminal, if you need to watch a single log. Commands marked **host** run on the Jetson itself. Commands marked **container** run after `docker exec`.
 
 ### 0. Host: devices and container (once per boot)
 
