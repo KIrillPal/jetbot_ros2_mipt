@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Телеуправление{% endblock %}
+{% block content %}
+<style>
+    .teleop-root { display: flex; flex-direction: column; height: calc(100vh - 170px); background: white; border: 1px solid #dee2e6; }
+    .teleop-title { text-align: center; padding: 8px; border-bottom: 1px solid #dee2e6; background: #f8f9fa; font-weight: 700; }
+    .video-container { flex: 1; position: relative; overflow: hidden; }
+    #videoFeed { width: 100%; height: 100%; object-fit: contain; }
+    #staringOverlay { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
+    #centerDot { position: absolute; width: 8px; height: 8px; background: rgba(255, 0, 0, 0.7); border-radius: 50%; display: none; transform: translate(-50%, -50%); left: 50%; top: 50%; z-index: 100; }
+    .keyboard-status { position: absolute; top: 8px; left: 8px; background: rgba(255,255,255,0.9); border-radius: 8px; padding: 8px; z-index: 50; }
+    .key-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+    .key-box { width: 30px; height: 30px; border: 2px solid #ccc; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-weight: 700; background: #f8f9fa; }
+    .key-box.active.wasd { background: #ff6b35; border-color: #ff6b35; color: white; }
+    .key-box.active.shift { background: #007bff; border-color: #007bff; color: white; }
+    .panel { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; border-top: 1px solid #dee2e6; background: #f8f9fa; align-items: center; }
+    button { padding: 8px 12px; border: none; border-radius: 6px; color: white; background: #007bff; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .stop-btn { background: #dc3545; }
+    .tracking-btn { background: #28a745; }
+    .tracking-btn.active { background: #dc3545; }
+    .mobile-pose { display: none; }
+    @media (max-width: 900px) {
+        .teleop-root { height: calc(100vh - 140px); }
+        .keyboard-status { display: none; }
+        #staringOverlay, #centerDot { display: none !important; }
+        .panel button { display: none; }
+        .panel .desktop-stats { display: none; }
+        .panel .mobile-pose { display: inline; font-weight: 700; }
+    }
+</style>
+<div class="teleop-root">
+    <div class="teleop-title">Robot Head & Car Control</div>
+    <div class="video-container" id="videoContainer">
+        <img id="videoFeed" src="{{ url_for('video_feed') }}" alt="Camera Feed"><div id="centerDot"></div>
+        <canvas id="staringOverlay"></canvas>
+        <div class="keyboard-status">
+            <div class="key-row"><div class="key-box" id="keyW">W</div><span>Forward</span></div>
+            <div class="key-row"><div class="key-box" id="keyA">A</div><span>Left</span></div>
+            <div class="key-row"><div class="key-box" id="keyS">S</div><span>Backward</span></div>
+            <div class="key-row"><div class="key-box" id="keyD">D</div><span>Right</span></div>
+            <div class="key-row"><div class="key-box" id="keyShift">Shift</div><span>Turbo</span></div>
+        </div>
+    </div>
+    <div class="panel">
+        <button onclick="carControl('forward')" id="btnForward">Forward (W)</button>
+        <button onclick="carControl('backward')" id="btnBackward">Backward (S)</button>
+        <button onclick="carControl('left')" id="btnLeft">Left (A)</button>
+        <button onclick="carControl('right')" id="btnRight">Right (D)</button>
+        <button onclick="carControl('stop')" id="btnStop" class="stop-btn">Stop</button>
+        <button onclick="resetPosition()" id="btnReset">Reset Head</button>
+        <button id="trackingBtn" class="tracking-btn" onclick="toggleTracking()">Enable Control</button>
+        <button onclick="addFace()" id="btnAddFace">Add Face</button>
+        <button onclick="captureImage()" id="btnCapture">Capture Image</button>
+        <span class="desktop-stats">
+            Position: X=<span id="posX">0</span> Y=<span id="posY">0</span> |
+            Cmd throttle=<span id="cmdSpeed">0.00</span> steer=<span id="cmdSteer">0.00</span> pan=<span id="cmdPan">0.0</span>° tilt=<span id="cmdTilt">0.0</span>° |
+            Telem v=<span id="telemSpeed">0.00</span> steer=<span id="telemSteer">0.00</span>° yaw_rate=<span id="telemYawRate">0.00</span> | head_latency_ms=<span id="telemHeadLatency">—</span> |
+            <span id="staringMeta"></span>
+            <span id="controlStatus">Disabled</span>
+        </span>
+        <span class="mobile-pose">Pose: X=<span id="posXMobile">0</span> Y=<span id="posYMobile">0</span></span>
+    </div>
+</div>
+<script>
+let isTracking=false,isPointerLocked=false;
+const isMobileView=window.matchMedia('(max-width: 900px)').matches;
+const videoContainer=document.getElementById('videoContainer'),videoFeed=document.getElementById('videoFeed'),centerDot=document.getElementById('centerDot');
+const trackingBtn=document.getElementById('trackingBtn'),controlStatus=document.getElementById('controlStatus');
+const staringMeta=document.getElementById('staringMeta');
+const posX=document.getElementById('posX'),posY=document.getElementById('posY');
+const posXMobile=document.getElementById('posXMobile'),posYMobile=document.getElementById('posYMobile');
+const cmdSpeed=document.getElementById('cmdSpeed'),cmdSteer=document.getElementById('cmdSteer'),cmdPan=document.getElementById('cmdPan'),cmdTilt=document.getElementById('cmdTilt');
+const telemSpeed=document.getElementById('telemSpeed'),telemSteer=document.getElementById('telemSteer'),telemYawRate=document.getElementById('telemYawRate'),telemHeadLatency=document.getElementById('telemHeadLatency');
+const staringOverlay=document.getElementById('staringOverlay');
+const overlayCtx=staringOverlay.getContext('2d');
+const keyMap={w:keyW,a:keyA,s:keyS,d:keyD,shift:keyShift};
+const btns=[btnForward,btnBackward,btnLeft,btnRight,btnStop,btnReset,btnAddFace,btnCapture];
+const updateButtonStates=()=>btns.forEach(b=>b.disabled=!isTracking);
+const updateKeyIndicator=(k,a)=>{const el=keyMap[k];if(!el)return;a?(el.classList.add('active'),el.classList.add(k==='shift'?'shift':'wasd')):el.classList.remove('active','shift','wasd');};
+const getKeyFromEvent=(e)=>{const k=e.key.toLowerCase();return ['w','a','s','d','shift','control'].includes(k)?(k==='control'?'ctrl':k):null;};
+const setMode=(mode)=>fetch('/api/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
+const sendKeyEvent=(key,state)=>fetch('/api/keyboard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,state,action:state?'press':'release'})});
+async function updatePosition(dx,dy){const d=await (await fetch('/api/position',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dx,dy})})).json();if(d.success){posX.textContent=Math.round(d.x);posY.textContent=Math.round(d.y);}}
+async function resetPosition(){if(!isTracking)return;const d=await (await fetch('/api/reset',{method:'POST'})).json();if(d.success){posX.textContent=d.x;posY.textContent=d.y;}}
+async function carControl(a){if(!isTracking)return;if(a==='stop'){await fetch('/api/car/stop',{method:'POST'});return;}let speed=0,steering=0;if(a==='forward')speed=0.5;if(a==='backward')speed=-0.5;if(a==='left')steering=-0.5;if(a==='right')steering=0.5;await fetch('/api/car/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({speed,steering})});}
+async function captureImage(){if(isTracking)await fetch('/api/capture',{method:'POST'});}
+async function addFace(){
+    if(!isTracking)return;
+    const nameRaw=window.prompt('Face name (optional):','');
+    if(nameRaw===null)return;
+    const body={type:'add_face'};
+    const trimmed=nameRaw.trim();
+    if(trimmed.length>0)body.name=trimmed;
+    await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+}
+const setTracking=(tracking)=>fetch('/api/tracking',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tracking})});
+function resizeOverlay(){const rect=videoContainer.getBoundingClientRect();staringOverlay.width=Math.max(1,Math.floor(rect.width));staringOverlay.height=Math.max(1,Math.floor(rect.height));}
+function videoRenderRect(){const cw=staringOverlay.width,ch=staringOverlay.height;const iw=videoFeed.naturalWidth||0,ih=videoFeed.naturalHeight||0;if(!iw||!ih)return null;const scale=Math.min(cw/iw,ch/ih);const rw=iw*scale,rh=ih*scale;const ox=(cw-rw)*0.5,oy=(ch-rh)*0.5;return {iw,ih,scale,rw,rh,ox,oy};}
+function mapPoint(x,y,vr){return {x:vr.ox+x*vr.scale,y:vr.oy+y*vr.scale};}
+function drawStaringOverlay(status){
+    overlayCtx.clearRect(0,0,staringOverlay.width,staringOverlay.height);
+    const mode=status.mode||'';
+    const profile=status.profile_state||{};
+    const overlay=profile.staring_overlay||[];
+    if(mode!=='staring'&&mode!=='silly_following'||!Array.isArray(overlay)||overlay.length===0){return;}
+    const vr=videoRenderRect();
+    if(!vr){return;}
+    for(const p of overlay){
+        const bbox=p.bbox||[];
+        if(bbox.length!==4)continue;
+        const a=mapPoint(Number(bbox[0]),Number(bbox[1]),vr);
+        const b=mapPoint(Number(bbox[2]),Number(bbox[3]),vr);
+        const isMatched=Boolean(p.matched_name);
+        overlayCtx.lineWidth=2;
+        overlayCtx.strokeStyle=isMatched?'#00ff88':'#ffb347';
+        overlayCtx.strokeRect(a.x,a.y,b.x-a.x,b.y-a.y);
+        const labelParts=[`id:${p.track_id}`,`yaw:${Number(p.head_yaw_deg||0).toFixed(1)}°`];
+        if(p.matched_name)labelParts.push(`name:${p.matched_name}`);
+        const label=labelParts.join(' ');
+        overlayCtx.font='12px Arial';
+        const tw=overlayCtx.measureText(label).width+8;
+        const th=16;
+        overlayCtx.fillStyle='rgba(0,0,0,0.65)';
+        overlayCtx.fillRect(a.x,Math.max(0,a.y-th),tw,th);
+        overlayCtx.fillStyle='#ffffff';
+        overlayCtx.fillText(label,a.x+4,Math.max(12,a.y-4));
+        const kc=p.keypoints||[];
+        overlayCtx.fillStyle=isMatched?'#00ff88':'#ffb347';
+        for(const kp of kc){
+            if(!Array.isArray(kp)||kp.length<3)continue;
+            if(Number(kp[2])<=0)continue;
+            const pt=mapPoint(Number(kp[0]),Number(kp[1]),vr);
+            overlayCtx.beginPath();
+            overlayCtx.arc(pt.x,pt.y,2.5,0,Math.PI*2);
+            overlayCtx.fill();
+        }
+        const hc=p.head_center||[];
+        if(Array.isArray(hc)&&hc.length===2){
+            const hp=mapPoint(Number(hc[0]),Number(hc[1]),vr);
+            overlayCtx.strokeStyle='#ff4d4f';
+            overlayCtx.beginPath();
+            overlayCtx.moveTo(hp.x-6,hp.y);
+            overlayCtx.lineTo(hp.x+6,hp.y);
+            overlayCtx.moveTo(hp.x,hp.y-6);
+            overlayCtx.lineTo(hp.x,hp.y+6);
+            overlayCtx.stroke();
+        }
+    }
+}
+async function enableTracking(){const req=videoContainer.requestPointerLock||videoContainer.mozRequestPointerLock||videoContainer.webkitRequestPointerLock;if(!req)return;req.call(videoContainer);const st=await(await fetch('/api/status')).json();const cur=st.mode||'';if(cur!=='teleop_slam'&&cur!=='teleoperation'&&cur!=='staring'&&cur!=='silly_following')await setMode('teleoperation');isTracking=true;trackingBtn.textContent='Disable Control';trackingBtn.classList.add('active');controlStatus.textContent='Enabled';controlStatus.style.color='green';updateButtonStates();setTracking(true);}
+function disableTracking(){const exit=document.exitPointerLock||document.mozExitPointerLock||document.webkitExitPointerLock;if(exit)exit.call(document);isTracking=false;trackingBtn.textContent='Enable Control';trackingBtn.classList.remove('active');controlStatus.textContent='Disabled';controlStatus.style.color='red';updateButtonStates();['w','a','s','d','shift'].forEach(k=>updateKeyIndicator(k,false));fetch('/api/car/stop',{method:'POST'});setTracking(false);}
+function toggleTracking(){isTracking?disableTracking():enableTracking();}
+function handlePointerLockChange(){isPointerLocked=(document.pointerLockElement===videoContainer||document.mozPointerLockElement===videoContainer||document.webkitPointerLockElement===videoContainer);centerDot.style.display=isPointerLocked?'block':'none';videoFeed.style.cursor=isPointerLocked?'none':'default';if(!isPointerLocked&&isTracking)disableTracking();}
+document.addEventListener('pointerlockchange',handlePointerLockChange);document.addEventListener('mozpointerlockchange',handlePointerLockChange);document.addEventListener('webkitpointerlockchange',handlePointerLockChange);
+document.addEventListener('mousemove',e=>{if(isTracking&&isPointerLocked){const dx=e.movementX||0,dy=e.movementY||0;if(dx||dy)updatePosition(dx,dy);}});
+document.addEventListener('keydown',e=>{if(!isTracking)return;const key=getKeyFromEvent(e);if(key){e.preventDefault();sendKeyEvent(key,true);updateKeyIndicator(key,true);}if(e.key==='Escape')disableTracking();});
+document.addEventListener('keyup',e=>{if(!isTracking)return;const key=getKeyFromEvent(e);if(key){e.preventDefault();sendKeyEvent(key,false);updateKeyIndicator(key,false);}});
+setInterval(async()=>{
+    const d=await (await fetch('/api/status')).json();
+    posX.textContent=Math.round(d.x);
+    posY.textContent=Math.round(d.y);
+    posXMobile.textContent=Math.round(d.x);
+    posYMobile.textContent=Math.round(d.y);
+    const c=d.command||{};
+    const t=d.telemetry||{};
+    cmdSpeed.textContent=Number(c.speed||0).toFixed(2);
+    cmdSteer.textContent=Number(c.steering||0).toFixed(2);
+    cmdPan.textContent=Number(c.head_pan_deg!=null?c.head_pan_deg:(c.head_pan||0)*60).toFixed(1);
+    cmdTilt.textContent=Number(c.head_tilt_deg!=null?c.head_tilt_deg:(c.head_tilt||0)*45).toFixed(1);
+    telemSpeed.textContent=Number(t.speed_mps||0).toFixed(2);
+    telemSteer.textContent=Number(t.steering_deg!=null?t.steering_deg:(t.steering_rad||0)*57.296).toFixed(1);
+    telemYawRate.textContent=Number(t.imu_yaw_rate||0).toFixed(2);
+    telemHeadLatency.textContent=t.head_command_latency_ms!=null?Number(t.head_command_latency_ms).toFixed(0):'—';
+    const ps=d.profile_state||{};
+    if((d.mode||'')==='staring'||(d.mode||'')==='silly_following'){
+        const trackId=(ps.staring_track_id==null)?'-':ps.staring_track_id;
+        staringMeta.textContent=`| Staring: ${ps.staring_state||'manual'} target=${ps.staring_target||'-'} track=${trackId} persons=${Number(ps.persons_count||0)}`;
+    }else{
+        staringMeta.textContent='';
+    }
+    if(!isMobileView)drawStaringOverlay(d);
+},200);
+videoFeed.addEventListener('load',resizeOverlay);
+window.addEventListener('resize',resizeOverlay);
+resizeOverlay();
+if(isMobileView){
+    isTracking=false;
+    updateButtonStates();
+}else{
+    updateButtonStates();
+}
+</script>
+{% endblock %}

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}JetBot{% endblock %}</title>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; background: #f3f5f7; color: #222; }
+        .topbar { background: #1f2937; color: white; padding: 10px 16px; }
+        .tabs { display: flex; gap: 8px; padding: 10px 16px; background: #e5e7eb; border-bottom: 1px solid #d1d5db; }
+        .tab { text-decoration: none; color: #111827; background: #f9fafb; border: 1px solid #d1d5db; border-radius: 8px; padding: 8px 12px; }
+        .tab.active { background: #2563eb; color: white; border-color: #2563eb; }
+        .content { padding: 16px; }
+        @media (max-width: 900px) {
+            .content { padding: 10px; }
+        }
+    </style>
+</head>
+<body>
+<div class="topbar"><strong>JetBot</strong></div>
+<div class="tabs">
+    <a class="tab {% if active_tab == 'teleop' %}active{% endif %}" href="/teleop">Телеуправление</a>
+</div>
+<div class="content">{% block content %}{% endblock %}</div>
+</body>
+</html>

@@ -1,0 +1,54 @@
+# colcon / ament
+/build/
+/install/
+/log/
+.colcon/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# C/C++ and in-source CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+*.o
+*.obj
+*.so
+*.a
+
+# ROS bags and recordings
+*.bag
+*.db3
+*.db3-wal
+*.db3-shm
+
+# Editor and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.#*
+
+# Secrets
+.env
+.env.*
+
+# Accidental captures and a failed image export at the repo root
+/src/*.jpg
+/src/*.jpeg
+/src/*.png
+/OUTPUT_TAR_NAME
