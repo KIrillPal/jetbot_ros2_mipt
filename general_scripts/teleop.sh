@@ -231,7 +231,8 @@ start_docker() {
 start_drivers() {
   : >"$LOG_DIR/drivers.log"
   compose exec --privileged -T jetbot_educational bash -lc \
-    'source /home/app/ros2_ws/install/setup.bash
+    'source /opt/ros/humble/install/setup.bash
+     source /home/app/ros2_ws/install/setup.bash
      echo $$ >/tmp/jetbot-teleop-drivers.pid
      exec ros2 launch jetbot_bringup activate_all_drivers.launch.py' \
     >"$LOG_DIR/drivers.log" 2>&1 &
@@ -243,9 +244,25 @@ start_drivers() {
   fi
 }
 
+# Spawners exit on purpose once the controller is active. The launch log says
+# "process has finished cleanly", but diffbot_base_controller keeps running
+# inside ros2_control_node. That line is success, not shutdown.
+# ros2 launch colors the controller name, so the bytes are
+# "activated <esc>[1mdiffbot_base_controller<esc>[0m", not plain text.
+plain_driver_log() {
+  sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g' "$LOG_DIR/drivers.log"
+}
+
+controllers_are_active() {
+  local text
+  text="$(plain_driver_log)"
+  grep -q 'Configured and activated joint_state_broadcaster' <<<"$text" \
+    && grep -q 'Configured and activated diffbot_base_controller' <<<"$text" \
+    && grep -q 'Successfully activated!' <<<"$text"
+}
+
 wait_for_controllers() {
   local deadline=$((SECONDS + 50))
-  local out
   while (( SECONDS < deadline )); do
     if ! kill -0 "$DRIVER_EXEC_PID" 2>/dev/null; then
       mapfile -t lines < <(log_lines "$LOG_DIR/drivers.log")
@@ -257,19 +274,16 @@ wait_for_controllers() {
         "ros2_control failed while opening the motor serial port." \
         "${lines[@]}"
     fi
-    out="$(exec_in 'source /home/app/ros2_ws/install/setup.bash; ros2 control list_controllers -c /controller_manager' 2>/dev/null || true)"
-    if grep -q 'joint_state_broadcaster' <<<"$out" \
-        && grep -q 'diffbot_base_controller' <<<"$out" \
-        && grep 'joint_state_broadcaster' <<<"$out" | grep -qw active \
-        && grep 'diffbot_base_controller' <<<"$out" | grep -qw active; then
+    if controllers_are_active; then
       ok "motor drivers"
       return
     fi
-    sleep 2
+    sleep 1
   done
   mapfile -t lines < <(log_lines "$LOG_DIR/drivers.log")
   fail "motor drivers did not become active" \
-    "diffbot_base_controller was not active within 50s." \
+    "The launch log never reported that diffbot_base_controller was activated." \
+    "A spawner line 'process has finished cleanly' is normal and is not a failure." \
     "${lines[@]}"
 }
 
@@ -297,7 +311,8 @@ wait_for_lidar() {
 start_keyboard() {
   : >"$LOG_DIR/keyboard.log"
   compose exec --privileged -T jetbot_educational bash -lc \
-    'source /home/app/ros2_ws/install/setup.bash
+    'source /opt/ros/humble/install/setup.bash
+     source /home/app/ros2_ws/install/setup.bash
      echo $$ >/tmp/jetbot-teleop-keyboard.pid
      exec ros2 run jetbot_bringup keyboard_teleop --ros-args -p linear:=0.12 -p angular:=1.0' \
     >"$LOG_DIR/keyboard.log" 2>&1 &
