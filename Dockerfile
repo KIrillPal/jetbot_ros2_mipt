@@ -9,7 +9,9 @@ ENV ROS_ROOT=/opt/ros/${ROS_DISTRO}
 RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
 
 RUN apt-get update && apt-get install -q -y \
-  libserial-dev && \
+  libserial-dev \
+  python3-numpy \
+  python3-opencv && \
   rm -rf /var/lib/apt/lists/*
 
 WORKDIR ${ROS_ROOT}/src

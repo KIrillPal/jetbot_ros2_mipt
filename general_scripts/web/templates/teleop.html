@@ -19,6 +19,8 @@
     .stop-btn { background: #dc3545; }
     .tracking-btn { background: #28a745; }
     .tracking-btn.active { background: #dc3545; }
+    .aruco-btn { background: #6f42c1; }
+    .aruco-btn.active { background: #dc3545; }
     .mobile-pose { display: none; }
     @media (max-width: 900px) {
         .teleop-root { height: calc(100vh - 140px); }
@@ -50,6 +52,7 @@
         <button onclick="carControl('stop')" id="btnStop" class="stop-btn">Stop</button>
         <button onclick="resetPosition()" id="btnReset">Reset Head</button>
         <button id="trackingBtn" class="tracking-btn" onclick="toggleTracking()">Enable Control</button>
+        <button id="arucoBtn" class="aruco-btn" onclick="toggleArUcoFollower()">ArUco Follower</button>
         <button onclick="addFace()" id="btnAddFace">Add Face</button>
         <button onclick="captureImage()" id="btnCapture">Capture Image</button>
         <span class="desktop-stats">
@@ -58,15 +61,17 @@
             Telem v=<span id="telemSpeed">0.00</span> steer=<span id="telemSteer">0.00</span>° yaw_rate=<span id="telemYawRate">0.00</span> | head_latency_ms=<span id="telemHeadLatency">—</span> |
             <span id="staringMeta"></span>
             <span id="controlStatus">Disabled</span>
+            | ArUco: <span id="arucoStatus">Disabled</span>
         </span>
         <span class="mobile-pose">Pose: X=<span id="posXMobile">0</span> Y=<span id="posYMobile">0</span></span>
     </div>
 </div>
 <script>
-let isTracking=false,isPointerLocked=false;
+let isTracking=false,isPointerLocked=false,arucoEnabled=false;
 const isMobileView=window.matchMedia('(max-width: 900px)').matches;
 const videoContainer=document.getElementById('videoContainer'),videoFeed=document.getElementById('videoFeed'),centerDot=document.getElementById('centerDot');
 const trackingBtn=document.getElementById('trackingBtn'),controlStatus=document.getElementById('controlStatus');
+const arucoBtn=document.getElementById('arucoBtn'),arucoStatus=document.getElementById('arucoStatus');
 const staringMeta=document.getElementById('staringMeta');
 const posX=document.getElementById('posX'),posY=document.getElementById('posY');
 const posXMobile=document.getElementById('posXMobile'),posYMobile=document.getElementById('posYMobile');
@@ -95,6 +100,31 @@ async function addFace(){
     await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 }
 const setTracking=(tracking)=>fetch('/api/tracking',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tracking})});
+function setArUcoUi(enabled,status={}){
+    arucoEnabled=Boolean(enabled);
+    arucoBtn.classList.toggle('active',arucoEnabled);
+    trackingBtn.disabled=arucoEnabled;
+    if(arucoEnabled&&isTracking)disableTracking();
+    const state=String(status.state||'').replaceAll('_',' ');
+    arucoStatus.textContent=arucoEnabled?(state||'Starting'):'Disabled';
+    arucoStatus.style.color=arucoEnabled?'#6f42c1':'';
+}
+async function toggleArUcoFollower(){
+    const enabled=!arucoEnabled;
+    if(enabled&&isTracking)disableTracking();
+    arucoBtn.disabled=true;
+    try{
+        const response=await fetch('/api/aruco-follower',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});
+        const data=await response.json();
+        if(!response.ok||!data.success)throw new Error(data.error||'request failed');
+        setArUcoUi(Boolean(data.enabled),{state:data.enabled?'STARTING':'DISABLED'});
+    }catch(error){
+        arucoStatus.textContent='Error';
+        arucoStatus.style.color='#dc3545';
+    }finally{
+        arucoBtn.disabled=false;
+    }
+}
 function resizeOverlay(){const rect=videoContainer.getBoundingClientRect();staringOverlay.width=Math.max(1,Math.floor(rect.width));staringOverlay.height=Math.max(1,Math.floor(rect.height));}
 function videoRenderRect(){const cw=staringOverlay.width,ch=staringOverlay.height;const iw=videoFeed.naturalWidth||0,ih=videoFeed.naturalHeight||0;if(!iw||!ih)return null;const scale=Math.min(cw/iw,ch/ih);const rw=iw*scale,rh=ih*scale;const ox=(cw-rw)*0.5,oy=(ch-rh)*0.5;return {iw,ih,scale,rw,rh,ox,oy};}
 function mapPoint(x,y,vr){return {x:vr.ox+x*vr.scale,y:vr.oy+y*vr.scale};}
@@ -173,6 +203,8 @@ setInterval(async()=>{
     telemYawRate.textContent=Number(t.imu_yaw_rate||0).toFixed(2);
     telemHeadLatency.textContent=t.head_command_latency_ms!=null?Number(t.head_command_latency_ms).toFixed(0):'—';
     const ps=d.profile_state||{};
+    const af=ps.aruco_follower||{};
+    setArUcoUi(Boolean(af.enabled),af);
     if((d.mode||'')==='staring'||(d.mode||'')==='silly_following'){
         const trackId=(ps.staring_track_id==null)?'-':ps.staring_track_id;
         staringMeta.textContent=`| Staring: ${ps.staring_state||'manual'} target=${ps.staring_target||'-'} track=${trackId} persons=${Number(ps.persons_count||0)}`;

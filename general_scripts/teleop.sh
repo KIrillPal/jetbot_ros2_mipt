@@ -15,11 +15,14 @@ LOCK_FILE="$LOG_DIR/entrypoint.pid"
 WE_STARTED_CONTAINER=0
 STARTED_DRIVERS=0
 STARTED_KEYBOARD=0
+STARTED_ARUCO=0
 CAMERA_PID=""
 DRIVER_EXEC_PID=""
 DRIVER_INNER_PID=""
 KEYBOARD_EXEC_PID=""
 KEYBOARD_INNER_PID=""
+ARUCO_EXEC_PID=""
+ARUCO_INNER_PID=""
 CLEANED=0
 
 ok() {
@@ -86,6 +89,10 @@ signal_our_nodes() {
     exec_in "pkill -${signal} -f 'lib/jetbot_bringup/keyboar[d]_teleop' || true; pkill -${signal} -f 'ros2 run jetbot_bringup keyboar[d]_teleop' || true" \
       >/dev/null 2>&1 || true
   fi
+  if [[ $STARTED_ARUCO -eq 1 ]]; then
+    exec_in "pkill -${signal} -f 'aruco_follower\\.launch\\.p[y]' || true; pkill -${signal} -f 'lib/jetbot_aruco_follower/aruco_[d]etector' || true; pkill -${signal} -f 'lib/jetbot_aruco_follower/aruco_[f]ollower' || true; pkill -${signal} -f 'lib/jetbot_aruco_follower/http_camera_[b]ridge' || true" \
+      >/dev/null 2>&1 || true
+  fi
   if [[ $STARTED_DRIVERS -eq 1 ]]; then
     exec_in "pkill -${signal} -f 'activate_all_driver[s].launch.py' || true; pkill -${signal} -f 'twist_mu[x]' || true; pkill -${signal} -f 'rplida[r]_node' || true; pkill -${signal} -f 'ros2_control_nod[e]' || true; pkill -${signal} -f 'robot_state_publishe[r]' || true; pkill -${signal} -f 'http.server 800[0]' || true" \
       >/dev/null 2>&1 || true
@@ -94,6 +101,9 @@ signal_our_nodes() {
 
 our_nodes_still_running() {
   if [[ $STARTED_KEYBOARD -eq 1 ]] && proc_in_container 'lib/jetbot_bringup/keyboar[d]_teleop|ros2 run jetbot_bringup keyboar[d]_teleop'; then
+    return 0
+  fi
+  if [[ $STARTED_ARUCO -eq 1 ]] && proc_in_container 'aruco_follower\.launch\.p[y]|lib/jetbot_aruco_follower/aruco_[d]etector|lib/jetbot_aruco_follower/aruco_[f]ollower|lib/jetbot_aruco_follower/http_camera_[b]ridge'; then
     return 0
   fi
   if [[ $STARTED_DRIVERS -eq 1 ]] && proc_in_container 'activate_all_driver[s].launch.py|twist_mu[x]|rplida[r]_node|ros2_control_nod[e]|robot_state_publishe[r]|http.server 800[0]'; then
@@ -122,6 +132,7 @@ cleanup() {
   done
   signal_our_nodes KILL
   stop_host "$KEYBOARD_EXEC_PID"
+  stop_host "$ARUCO_EXEC_PID"
   stop_host "$DRIVER_EXEC_PID"
   if [[ $WE_STARTED_CONTAINER -eq 1 ]]; then
     compose stop jetbot_educational >/dev/null 2>&1
@@ -183,6 +194,9 @@ check_not_already_up() {
     fi
     if proc_in_container 'lib/jetbot_bringup/keyboar[d]_teleop'; then
       reasons+=("keyboard_teleop is already running in the container (port 8081)")
+    fi
+    if proc_in_container 'lib/jetbot_aruco_follower/aruco_[f]ollower|aruco_follower\.launch\.p[y]'; then
+      reasons+=("ArUco follower is already running in the container")
     fi
   fi
   if [[ ${#reasons[@]} -gt 0 ]]; then
@@ -364,6 +378,46 @@ ensure_keyboard_package() {
   ok "keyboard executable"
 }
 
+aruco_installed() {
+  local executables
+  executables="$(exec_in 'source /opt/ros/humble/install/setup.bash && source /home/app/ros2_ws/install/setup.bash && ros2 pkg executables jetbot_aruco_follower' 2>/dev/null || true)"
+  grep -qx 'jetbot_aruco_follower aruco_detector' <<<"$executables" \
+    && grep -qx 'jetbot_aruco_follower aruco_follower' <<<"$executables" \
+    && grep -qx 'jetbot_aruco_follower http_camera_bridge' <<<"$executables"
+}
+
+opencv_aruco_available() {
+  exec_in "python3 -c 'import cv2; assert hasattr(cv2, \"aruco\")'" >/dev/null 2>&1
+}
+
+ensure_aruco_package() {
+  if ! opencv_aruco_available; then
+    fail "OpenCV ArUco support is missing" \
+      "The container Python cannot import cv2.aruco." \
+      "Rebuild the Docker image from this repository so python3-opencv is installed."
+  fi
+  if aruco_installed; then
+    ok "ArUco follower executables"
+    return
+  fi
+  note "REBUILD  workspace inside the container: ArUco follower is not installed"
+  if ! compose exec --privileged -T jetbot_educational bash -lc \
+    'source /opt/ros/humble/install/setup.bash
+     cd /home/app/ros2_ws
+     colcon build --parallel-workers 2' \
+    >"$LOG_DIR/workspace-build.log" 2>&1; then
+    mapfile -t lines < <(log_lines "$LOG_DIR/workspace-build.log")
+    fail "workspace build failed" "${lines[@]}"
+  fi
+  if ! aruco_installed; then
+    mapfile -t lines < <(log_lines "$LOG_DIR/workspace-build.log")
+    fail "workspace build failed" \
+      "ros2 run cannot see all jetbot_aruco_follower executables after colcon build." \
+      "${lines[@]}"
+  fi
+  ok "ArUco follower executables"
+}
+
 start_keyboard() {
   : >"$LOG_DIR/keyboard.log"
   STARTED_KEYBOARD=1
@@ -428,6 +482,40 @@ start_camera() {
   fail "camera server did not serve the teleop page" "${lines[@]}"
 }
 
+start_aruco() {
+  : >"$LOG_DIR/aruco.log"
+  STARTED_ARUCO=1
+  compose exec --privileged -T jetbot_educational bash -lc \
+    'source /opt/ros/humble/install/setup.bash
+     source /home/app/ros2_ws/install/setup.bash
+     echo $$ >/tmp/jetbot-teleop-aruco.pid
+     config_file="$(ros2 pkg prefix jetbot_aruco_follower)/share/jetbot_aruco_follower/config/aruco_follower.yaml"
+     exec ros2 launch jetbot_aruco_follower aruco_follower.launch.py config_file:="${config_file}"' \
+    >"$LOG_DIR/aruco.log" 2>&1 &
+  ARUCO_EXEC_PID=$!
+  ARUCO_INNER_PID="$(wait_for_pidfile aruco || true)"
+  if [[ -z $ARUCO_INNER_PID ]]; then
+    mapfile -t lines < <(log_lines "$LOG_DIR/aruco.log")
+    fail "ArUco follower failed to start" "${lines[@]}"
+  fi
+  local i
+  for i in $(seq 1 40); do
+    if ! kill -0 "$ARUCO_EXEC_PID" 2>/dev/null; then
+      mapfile -t lines < <(log_lines "$LOG_DIR/aruco.log")
+      fail "ArUco follower exited" "${lines[@]}"
+    fi
+    if proc_in_container 'lib/jetbot_aruco_follower/aruco_[d]etector' \
+      && proc_in_container 'lib/jetbot_aruco_follower/aruco_[f]ollower' \
+      && proc_in_container 'lib/jetbot_aruco_follower/http_camera_[b]ridge'; then
+      ok "ArUco follower"
+      return
+    fi
+    sleep 0.25
+  done
+  mapfile -t lines < <(log_lines "$LOG_DIR/aruco.log")
+  fail "ArUco follower nodes did not become ready" "${lines[@]}"
+}
+
 supervise() {
   while true; do
     if ! kill -0 "$CAMERA_PID" 2>/dev/null; then
@@ -442,6 +530,10 @@ supervise() {
       mapfile -t lines < <(log_lines "$LOG_DIR/keyboard.log")
       fail "keyboard teleop stopped" "${lines[@]}"
     fi
+    if ! kill -0 "$ARUCO_EXEC_PID" 2>/dev/null; then
+      mapfile -t lines < <(log_lines "$LOG_DIR/aruco.log")
+      fail "ArUco follower stopped" "${lines[@]}"
+    fi
     sleep 2
   done
 }
@@ -455,6 +547,7 @@ check_not_already_up
 echo "$$" >"$LOCK_FILE"
 start_docker
 ensure_keyboard_package
+ensure_aruco_package
 check_device_free /dev/ttyMOTOR motor
 ok "motor port"
 check_device_free /dev/ttyLIDAR lidar
@@ -473,6 +566,7 @@ wait_for_controllers
 wait_for_lidar
 start_keyboard
 start_camera
+start_aruco
 
 ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 ip="${ip:-127.0.0.1}"

@@ -41,6 +41,7 @@ DRIVE_PATHS = frozenset((
     '/api/car/control',
     '/api/car/stop',
     '/api/tracking',
+    '/api/aruco-follower',
 ))
 
 

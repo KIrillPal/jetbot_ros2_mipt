@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""WASD teleop for the in-repo teleop page.
-
-The page posts /api/keyboard, /api/car/control, and /api/car/stop.
-One browser owns the robot. A second client is rejected until the first
-one releases or its status heartbeat goes stale.
-"""
+"""Serve the in-repo WASD teleop page API and publish its drive commands."""
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,11 +10,22 @@ import time
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from rclpy.qos import qos_profile_system_default
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_system_default,
+)
 from rclpy.signals import SignalHandlerOptions
+from std_msgs.msg import Bool, String
 
 CLIENT_ID = re.compile(r'[A-Za-z0-9-]{8,64}')
 MOTION_KEYS = ('w', 'a', 's', 'd', 'shift')
+ENABLE_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 
 class KeyboardTeleop(Node):
@@ -45,7 +51,22 @@ class KeyboardTeleop(Node):
         self._last_rx = 0.0
         self._keys = {key: False for key in MOTION_KEYS}
         self._twist = Twist()
+        self._aruco_enabled = False
+        self._aruco_status = {
+            'enabled': False,
+            'state': 'DISABLED',
+            'camera_ok': False,
+        }
+        self.aruco_enable_pub = self.create_publisher(
+            Bool, '/aruco/enabled', ENABLE_QOS)
+        self.create_subscription(
+            String,
+            '/aruco/follower_status',
+            self._on_aruco_status,
+            10,
+        )
         self.create_timer(0.1, self._publish)
+        self._publish_aruco_enabled(False)
 
     def apply_key(self, client_id, key, state):
         key = key.lower()
@@ -132,6 +153,8 @@ class KeyboardTeleop(Node):
             twist = Twist()
             twist.linear.x = self._twist.linear.x
             twist.angular.z = self._twist.angular.z
+            aruco_status = dict(self._aruco_status)
+            aruco_status['enabled'] = self._aruco_enabled
         if dropped:
             self.get_logger().info('client heartbeat lost, motors stopped')
         return {
@@ -152,7 +175,33 @@ class KeyboardTeleop(Node):
                 'imu_yaw_rate': 0.0,
                 'head_command_latency_ms': None,
             },
-            'profile_state': {},
+            'profile_state': {
+                'aruco_follower': aruco_status,
+            },
+        }
+
+    def set_aruco_enabled(self, enabled):
+        """Atomically switch the shared cmd_vel_joy publisher."""
+        enabled = bool(enabled)
+        with self._lock:
+            changed = enabled != self._aruco_enabled
+            self._aruco_enabled = enabled
+            self._owner = None
+            for key in self._keys:
+                self._keys[key] = False
+            self._twist = Twist()
+            self._aruco_status['enabled'] = enabled
+            if not enabled:
+                self._aruco_status['state'] = 'DISABLED'
+        # Stop first; the follower only starts after the latched enable event.
+        self.pub.publish(Twist())
+        self._publish_aruco_enabled(enabled)
+        if changed:
+            mode = 'enabled' if enabled else 'disabled'
+            self.get_logger().info(f'ArUco follower {mode}')
+        return {
+            'success': True,
+            'enabled': enabled,
         }
 
     def stop(self):
@@ -163,9 +212,12 @@ class KeyboardTeleop(Node):
             self._twist = Twist()
             twist = Twist()
         if self.context.ok():
+            self._publish_aruco_enabled(False)
             self.pub.publish(twist)
 
     def _claim(self, client_id, now):
+        if self._aruco_enabled:
+            return False, False
         dropped = self._drop_if_stale(now)
         if self._owner is None:
             self._owner = client_id
@@ -209,12 +261,29 @@ class KeyboardTeleop(Node):
         dropped = False
         with self._lock:
             dropped = self._drop_if_stale(now)
+            if self._aruco_enabled:
+                return
             twist = Twist()
             twist.linear.x = self._twist.linear.x
             twist.angular.z = self._twist.angular.z
         if dropped:
             self.get_logger().info('client heartbeat lost, motors stopped')
         self.pub.publish(twist)
+
+    def _publish_aruco_enabled(self, enabled):
+        message = Bool()
+        message.data = bool(enabled)
+        self.aruco_enable_pub.publish(message)
+
+    def _on_aruco_status(self, message):
+        try:
+            status = json.loads(message.data)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(status, dict):
+            return
+        with self._lock:
+            self._aruco_status = status
 
 
 class KeyHandler(BaseHTTPRequestHandler):
@@ -261,6 +330,16 @@ class KeyHandler(BaseHTTPRequestHandler):
                 ok, _message = self.node.apply_key(client_id, '', False)
             else:
                 ok = self.node.release(client_id)
+        elif path == '/api/aruco-follower':
+            enabled = payload.get('enabled')
+            if not isinstance(enabled, bool):
+                self._reply(
+                    400,
+                    {'success': False, 'error': 'enabled must be boolean'},
+                )
+                return
+            self._reply(200, self.node.set_aruco_enabled(enabled))
+            return
         else:
             self._reply(404, {'success': False, 'error': 'not found'})
             return
