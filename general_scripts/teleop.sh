@@ -19,6 +19,7 @@ STARTED_ARUCO=0
 CAMERA_PID=""
 DRIVER_EXEC_PID=""
 DRIVER_INNER_PID=""
+LIDAR_EXEC_PID=""
 KEYBOARD_EXEC_PID=""
 KEYBOARD_INNER_PID=""
 ARUCO_EXEC_PID=""
@@ -134,6 +135,7 @@ cleanup() {
   stop_host "$KEYBOARD_EXEC_PID"
   stop_host "$ARUCO_EXEC_PID"
   stop_host "$DRIVER_EXEC_PID"
+  stop_host "$LIDAR_EXEC_PID"
   if [[ $WE_STARTED_CONTAINER -eq 1 ]]; then
     compose stop jetbot_educational >/dev/null 2>&1
   fi
@@ -326,24 +328,87 @@ wait_for_controllers() {
     "${lines[@]}"
 }
 
+# The first startScan often dies with SL_RESULT_OPERATION_TIMEOUT before any
+# ranges arrive. A later start of the same node succeeds. "process has died"
+# is also logged for other launch processes, so only rplidar's own lines count.
+lidar_node_running() {
+  proc_in_container 'rplida[r]_node'
+}
+
+lidar_log_since() {
+  tail -c +$(($1 + 1)) "$LOG_DIR/drivers.log" 2>/dev/null || true
+}
+
+lidar_is_scanning() {
+  grep -q 'current scan mode:' <<<"$(lidar_log_since "$1")" && lidar_node_running
+}
+
+lidar_attempt_failed() {
+  grep -Eq '\[rplidar_node[^]]*\]: process has died|SL_RESULT_OPERATION_TIMEOUT|operation time out|Can not start scan|Failed to set scan mode|cannot retrieve RPLidar health' \
+    <<<"$(lidar_log_since "$1")"
+}
+
+stop_lidar_node() {
+  if [[ -n $LIDAR_EXEC_PID ]] && kill -0 "$LIDAR_EXEC_PID" 2>/dev/null; then
+    stop_host "$LIDAR_EXEC_PID"
+  fi
+  exec_in "pkill -TERM -f 'rplida[r]_node' || true" >/dev/null 2>&1 || true
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    lidar_node_running || return 0
+    sleep 0.25
+  done
+  exec_in "pkill -KILL -f 'rplida[r]_node' || true" >/dev/null 2>&1 || true
+}
+
+start_lidar_direct() {
+  compose exec --privileged -T jetbot_educational bash -lc \
+    'source /opt/ros/humble/install/setup.bash
+     source /home/app/ros2_ws/install/setup.bash
+     exec ros2 run rplidar_ros rplidar_node --ros-args \
+       -p channel_type:=serial \
+       -p serial_port:=/dev/ttyLIDAR \
+       -p serial_baudrate:=115200 \
+       -p frame_id:=lidar_link \
+       -p inverted:=false \
+       -p angle_compensate:=true \
+       -p scan_mode:=Standard' \
+    >>"$LOG_DIR/drivers.log" 2>&1 &
+  LIDAR_EXEC_PID=$!
+}
+
 wait_for_lidar() {
-  local deadline=$((SECONDS + 20))
-  while (( SECONDS < deadline )); do
-    if proc_in_container 'rplida[r]_node'; then
-      if grep -Eq 'cannot retrieve RPLidar health|process has died' "$LOG_DIR/drivers.log"; then
+  local attempt offset deadline
+  for attempt in 1 2 3; do
+    if (( attempt == 1 )); then
+      offset=0
+    else
+      note "RETRY  lidar did not answer; launching rplidar_node again"
+      stop_lidar_node
+      sleep 1
+      offset=$(wc -c <"$LOG_DIR/drivers.log")
+      start_lidar_direct
+    fi
+    deadline=$((SECONDS + 12))
+    while (( SECONDS < deadline )); do
+      if lidar_is_scanning "$offset"; then
+        ok "lidar"
+        return
+      fi
+      if ! lidar_node_running && lidar_attempt_failed "$offset"; then
         break
       fi
+      sleep 1
+    done
+    if lidar_is_scanning "$offset"; then
       ok "lidar"
       return
     fi
-    if grep -Eq 'cannot retrieve RPLidar health|ttyLIDAR|process has died' "$LOG_DIR/drivers.log"; then
-      break
-    fi
-    sleep 1
   done
-  mapfile -t lines < <(grep -E 'rplidar|RPLidar|ttyLIDAR|died|Error' "$LOG_DIR/drivers.log" | tail -n 20)
+  stop_lidar_node
+  mapfile -t lines < <(grep -E 'rplidar|RPLidar|scan mode|80008002|80008000|OPERATION_TIMEOUT|died' "$LOG_DIR/drivers.log" | tail -n 20)
   fail "lidar sensor failed" \
-    "rplidar_node is not running. /dev/ttyLIDAR may be busy, unplugged, or the lidar did not answer." \
+    "rplidar_node never started a scan. An operation timeout means /dev/ttyLIDAR did not answer in time." \
     "${lines[@]}"
 }
 

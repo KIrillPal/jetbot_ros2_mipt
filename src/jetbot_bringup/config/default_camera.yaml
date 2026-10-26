@@ -1,26 +1,61 @@
+# 1280x720 calibration scaled by 1/2 for the 640x360 teleop stream.
 image_width: 640
-image_height: 480
-camera_name: default_camera
+image_height: 360
+camera_name: jetbot_pi_camera
 camera_matrix:
   rows: 3
   cols: 3
-  data: [1.0, 0.0, 320.0,
-         0.0, 1.0, 240.0,
-         0.0, 0.0, 1.0]
+  data:
+  - 431.05742146217035
+  - 0.0
+  - 337.1568696850875
+  - 0.0
+  - 429.84041956150435
+  - 234.3842383349135
+  - 0.0
+  - 0.0
+  - 1.0
 distortion_model: plumb_bob
 distortion_coefficients:
   rows: 1
   cols: 5
-  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+  data:
+  - -0.3650357286815519
+  - 0.17152872748830295
+  - -0.004574971838226244
+  - 0.0004759914624551118
+  - -0.04648433478240838
 rectification_matrix:
   rows: 3
   cols: 3
-  data: [1.0, 0.0, 0.0,
-         0.0, 1.0, 0.0,
-         0.0, 0.0, 1.0]
+  data:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
 projection_matrix:
   rows: 3
   cols: 4
-  data: [1.0, 0.0, 320.0, 0.0,
-         0.0, 1.0, 240.0, 0.0,
-         0.0, 0.0, 1.0, 0.0]
+  data:
+  - 431.05742146217035
+  - 0.0
+  - 337.1568696850875
+  - 0.0
+  - 0.0
+  - 429.84041956150435
+  - 234.3842383349135
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+rms_reprojection_error: 0.3244480936090693
+chessboard_size: 10x7
+square_size_m: 0.025
+num_samples: 25
+source_url: http://127.0.0.1:8080/snapshot.jpg

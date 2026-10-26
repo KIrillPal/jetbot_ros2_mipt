@@ -14,13 +14,18 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - ./src:/home/app/ros2_ws/src
+      # Live host devtmpfs. A devices: entry for /dev/ttyLIDAR follows the
+      # symlink once at start and keeps that ttyUSB minor forever.
+      - /dev:/dev
     environment:
       - DISPLAY=${DISPLAY}
       - ROS_DOMAIN_ID=2
       - ROS_LOCALHOST_ONLY=0
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+    # Major 188 is ttyUSBx. The lidar moves between those nodes on replug.
+    device_cgroup_rules:
+      - 'c 188:* rmw'
     devices:
       - /dev/input:/dev/input
-      - /dev/ttyLIDAR:/dev/ttyLIDAR
       - /dev/ttyMOTOR:/dev/ttyMOTOR
       - /dev/video0:/dev/video0

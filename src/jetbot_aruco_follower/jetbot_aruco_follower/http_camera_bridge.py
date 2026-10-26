@@ -2,6 +2,7 @@
 
 import json
 import math
+from pathlib import Path
 import time
 import urllib.error
 import urllib.request
@@ -9,7 +10,8 @@ import urllib.request
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CameraInfo, CompressedImage
+import yaml
 
 
 class HttpCameraBridge(Node):
@@ -24,6 +26,9 @@ class HttpCameraBridge(Node):
         self.declare_parameter(
             'camera_topic', '/camera/image/compressed')
         self.declare_parameter('frame_id', 'camera_link')
+        self.declare_parameter('camera_info_file', '')
+        self.declare_parameter(
+            'camera_info_topic', '/camera/camera_info')
         self.declare_parameter('publish_hz', 10.0)
         self.declare_parameter('request_timeout_s', 0.4)
         self.base_url = str(
@@ -43,11 +48,25 @@ class HttpCameraBridge(Node):
         topic = str(self.get_parameter('camera_topic').value)
         self.publisher = self.create_publisher(
             CompressedImage, topic, qos_profile_sensor_data)
+        info_file = str(self.get_parameter('camera_info_file').value)
+        self.camera_info = (
+            load_camera_info(info_file, self.frame_id) if info_file else None)
+        info_topic = str(self.get_parameter('camera_info_topic').value)
+        self.info_publisher = (
+            self.create_publisher(
+                CameraInfo, info_topic, qos_profile_sensor_data)
+            if self.camera_info is not None else None)
         self.last_seq = -1
         self.last_warning_at = 0.0
         self.create_timer(1.0 / publish_hz, self._tick)
-        self.get_logger().info(
-            f'Bridging fresh JPEGs from {self.base_url} to {topic}')
+        if self.camera_info is None:
+            self.get_logger().info(
+                f'Bridging fresh JPEGs from {self.base_url} to {topic}')
+        else:
+            self.get_logger().info(
+                f'Bridging fresh JPEGs from {self.base_url} to {topic}; '
+                f'camera info {self.camera_info.width}x'
+                f'{self.camera_info.height} from {info_file}')
 
     def _fetch(self, path, max_bytes):
         request = urllib.request.Request(
@@ -90,7 +109,49 @@ class HttpCameraBridge(Node):
         msg.format = 'jpeg'
         msg.data = jpeg
         self.publisher.publish(msg)
+        if self.camera_info is not None:
+            self.camera_info.header.stamp = msg.header.stamp
+            self.info_publisher.publish(self.camera_info)
         self.last_seq = seq
+
+
+def load_camera_info(path, frame_id):
+    """Load a ROS calibration YAML file into a CameraInfo message."""
+    try:
+        data = yaml.safe_load(Path(path).read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        raise ValueError(f'cannot read camera info {path}: {error}') from error
+    if not isinstance(data, dict):
+        raise ValueError(f'camera info {path} must be a YAML mapping')
+    try:
+        width = int(data['image_width'])
+        height = int(data['image_height'])
+        matrix = [float(value) for value in data['camera_matrix']['data']]
+        distortion = [
+            float(value) for value in data['distortion_coefficients']['data']]
+        rectification = [
+            float(value) for value in data['rectification_matrix']['data']]
+        projection = [
+            float(value) for value in data['projection_matrix']['data']]
+        model = str(data['distortion_model'])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            f'camera info {path} is incomplete: {error}') from error
+    if (width <= 0 or height <= 0 or len(matrix) != 9
+            or len(distortion) not in (4, 5, 8, 12, 14)
+            or len(rectification) != 9 or len(projection) != 12
+            or matrix[0] <= 10 or matrix[4] <= 10):
+        raise ValueError(f'camera info {path} has invalid calibration values')
+    message = CameraInfo()
+    message.header.frame_id = frame_id
+    message.width = width
+    message.height = height
+    message.distortion_model = model
+    message.d = distortion
+    message.k = matrix
+    message.r = rectification
+    message.p = projection
+    return message
 
 
 def main(args=None):

@@ -13,6 +13,7 @@ def generate_launch_description():
     base_url = LaunchConfiguration('camera_server_url')
     config_file = LaunchConfiguration('config_file')
     focal_length = LaunchConfiguration('camera_focal_length_px')
+    camera_info_file = LaunchConfiguration('camera_info_file')
     return LaunchDescription([
         DeclareLaunchArgument(
             'camera_server_url',
@@ -29,6 +30,11 @@ def generate_launch_description():
             description='ROS 2 parameter YAML for detector and follower',
         ),
         DeclareLaunchArgument(
+            'camera_info_file',
+            default_value='',
+            description='ROS calibration YAML published as camera info',
+        ),
+        DeclareLaunchArgument(
             'camera_focal_length_px',
             default_value='0.0',
             description='Measured focal length in pixels; zero uses camera FOV',
@@ -38,7 +44,10 @@ def generate_launch_description():
             executable='http_camera_bridge',
             name='aruco_http_camera_bridge',
             output='screen',
-            parameters=[{'base_url': base_url}],
+            parameters=[{
+                'base_url': base_url,
+                'camera_info_file': camera_info_file,
+            }],
         ),
         Node(
             package='jetbot_aruco_follower',
