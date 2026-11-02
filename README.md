@@ -2,6 +2,8 @@
 
 ROS 2 Humble stack for the MIPT JetBot: a differential-drive robot on a Jetson Nano with a serial motor board, an RPLidar, and an IMX219 CSI camera. You drive it from a browser page that shows the live camera and takes W/A/S/D from your keyboard. The same stack also supports a gamepad, SLAM mapping with `slam_toolbox`, and Nav2 configs.
 
+For independent wheel/RF2O odometry comparison and EKF fusion, see [Lab 3 sensor fusion](lab3_odometry_fusion/README.md). It runs outside the driver repository and provides a separate observation-only web interface.
+
 - [Architecture](#architecture)
 - [Teleoperation](#teleoperation)
 - [Where the code lives](#where-the-code-lives)

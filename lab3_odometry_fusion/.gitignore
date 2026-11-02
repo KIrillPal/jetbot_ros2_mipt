@@ -1,0 +1,7 @@
+/ws/
+/geographic_info/
+/results/
+/ui-arrow-backup-*/
+*.log
+*.tar.gz
+dist/*.codex-arrows-new
